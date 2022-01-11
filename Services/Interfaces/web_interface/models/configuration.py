@@ -29,6 +29,7 @@ import octobot_tentacles_manager.constants as tentacles_manager_constants
 import octobot_trading.api as trading_api
 import octobot_trading.constants as trading_constants
 import octobot_trading.modes as trading_modes
+import octobot_trading.exchanges as trading_exchanges
 import tentacles.Services.Interfaces.web_interface.constants as constants
 import octobot_evaluators.constants as evaluators_constants
 import octobot_services.interfaces.util as interfaces_util
@@ -52,6 +53,7 @@ DEFAULT_CONFIG_KEY = "default-config"
 TRADING_MODES_KEY = "trading-modes"
 STRATEGIES_KEY = "strategies"
 TRADING_MODE_KEY = "trading mode"
+EXCHANGE_KEY = "exchange"
 STRATEGY_KEY = "strategy"
 TA_EVALUATOR_KEY = "technical evaluator"
 SOCIAL_EVALUATOR_KEY = "social evaluator"
@@ -190,6 +192,8 @@ def _get_tentacle_packages():
     yield social, evaluators.AbstractEvaluator, SOCIAL_EVALUATOR_KEY
     import tentacles.Evaluator.RealTime as rt
     yield rt, evaluators.AbstractEvaluator, RT_EVALUATOR_KEY
+    import tentacles.Trading.Exchange as exchanges
+    yield exchanges, trading_exchanges.AbstractExchange, EXCHANGE_KEY
 
 
 def _get_activation_state(name, activation_states):
@@ -198,9 +202,11 @@ def _get_activation_state(name, activation_states):
 
 def get_tentacle_from_string(name, media_url, with_info=True):
     for package, abstract_class, tentacle_type in _get_tentacle_packages():
-        is_trading_mode = tentacle_type == TRADING_MODE_KEY
-        parent_inspector = tentacles_management.trading_mode_parent_inspection \
-            if is_trading_mode else tentacles_management.evaluator_parent_inspection
+        parent_inspector = tentacles_management.evaluator_parent_inspection
+        if tentacle_type == TRADING_MODE_KEY:
+            parent_inspector = tentacles_management.trading_mode_parent_inspection
+        if tentacle_type == EXCHANGE_KEY:
+            parent_inspector = tentacles_management.default_parents_inspection
         klass = tentacles_management.get_class_from_string(name, abstract_class, package, parent_inspector)
         if klass:
             if with_info:
@@ -208,8 +214,10 @@ def get_tentacle_from_string(name, media_url, with_info=True):
                     DESCRIPTION_KEY: get_tentacle_documentation(name, media_url),
                     NAME_KEY: name
                 }
-                if is_trading_mode:
+                if tentacle_type == TRADING_MODE_KEY:
                     _add_trading_mode_requirements_and_default_config(info, klass)
+                    activation_states = _get_trading_tentacles_activation()
+                elif tentacle_type == EXCHANGE_KEY:
                     activation_states = _get_trading_tentacles_activation()
                 else:
                     activation_states = _get_evaluators_tentacles_activation()
@@ -223,7 +231,7 @@ def get_tentacle_from_string(name, media_url, with_info=True):
 
 
 def get_tentacle_user_commands(klass):
-    return klass.get_user_commands()
+    return klass.get_user_commands() if klass is not None and hasattr(klass, "get_user_commands") else {}
 
 
 def get_tentacle_config(klass):
@@ -638,12 +646,19 @@ def get_other_exchange_list(remove_config_exchanges=False):
 
 def get_exchanges_details(exchanges_config) -> dict:
     tentacles_setup_config = interfaces_util.get_edited_tentacles_config()
-    return {
-        exchange_name: {
-            "has_websockets": trading_api.supports_websockets(exchange_name, tentacles_setup_config)
+    details = {}
+    import tentacles.Trading.Exchange as exchanges
+    for exchange_name in exchanges_config:
+        exchange_class = tentacles_management.get_class_from_string(
+            exchange_name, trading_exchanges.AbstractExchange,
+            exchanges,
+            tentacles_management.default_parents_inspection
+        )
+        details[exchange_name] = {
+            "has_websockets": trading_api.supports_websockets(exchange_name, tentacles_setup_config),
+            "configurable": False if exchange_class is None else exchange_class.is_configurable()
         }
-        for exchange_name in exchanges_config
-    }
+    return details
 
 
 def is_compatible_account(exchange_name: str, api_key, api_sec, api_pass) -> dict:
